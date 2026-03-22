@@ -11,7 +11,7 @@ ACTIVE_PROVIDER = "ilboursa"   # ilboursa | bvmt | tunisie_valeurs
 DB_HOST = "localhost"
 DB_PORT = 5432
 DB_USER = "postgres"
-DB_PASSWORD = "password"
+DB_PASSWORD = "root"
 DB_NAME = "tunindex"
 
 # -------------------------
