@@ -1,196 +1,150 @@
-# providers/ilboursa_elite.py
-
+# ilboursa_elite.py
+import cloudscraper
 from bs4 import BeautifulSoup
-from difflib import get_close_matches
-import re
-import time
-import random
+import time, random
 
-from services.fetcher import fetch
-from utils.captcha_detector import has_captcha
-from utils.fundamentals import calculate_bvps
-from utils.simple_cache import get as cache_get, set as cache_set
-
+# -----------------------------
+# Configuration
+# -----------------------------
 BASE_URL = "https://www.ilboursa.com"
+DELAY_MIN = 2        # polite scraping delay (seconds)
+DELAY_MAX = 4
 
+# -----------------------------
+# Scraper Initialization
+# -----------------------------
+scraper = cloudscraper.create_scraper(
+    browser={"browser": "chrome", "platform": "windows", "mobile": False}
+)
 
+# -----------------------------
+# Helper Functions
+# -----------------------------
+def parse_number(text):
+    """Convert string to float, clean spaces, commas, 'M' suffix"""
+    if not text:
+        return None
+    cleaned = text.replace(" ", "").replace(",", ".").replace("M", "")
+    try:
+        return float(cleaned)
+    except:
+        return None
+
+def extract_symbol(td):
+    """Extract symbol from <td> containing <a href="/marches/cotation_SYMBOL">"""
+    link = td.find("a")
+    if link and "href" in link.attrs:
+        href = link["href"]
+        return href.split("cotation_")[-1]
+    return td.get_text(strip=True)
+
+# -----------------------------
+# Fetch A-Z Stock List
+# -----------------------------
+def fetch_stock_list():
+    url = f"{BASE_URL}/marches/aaz"
+    resp = scraper.get(url)
+    resp.raise_for_status()
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    table = next(t for t in soup.find_all("table") if "nom" in t.text.lower())
+    stocks = []
+    for tr in table.find_all("tr")[1:]:
+        tds = tr.find_all("td")
+        if len(tds) < 4:
+            continue
+        symbol = extract_symbol(tds[0])
+        stocks.append({
+            "symbol": symbol,
+            "detail_url": BASE_URL + tds[0].find("a")["href"]
+        })
+    return stocks
+
+# -----------------------------
+# Fetch Stock Prices (Intraday)
+# -----------------------------
+def fetch_stock_prices():
+    url = f"{BASE_URL}/marches/aaz"
+    resp = scraper.get(url)
+    resp.raise_for_status()
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    table = next(t for t in soup.find_all("table") if "nom" in t.text.lower())
+    stocks = []
+
+    for tr in table.find_all("tr")[1:]:
+        tds = tr.find_all("td")
+        if len(tds) < 8:
+            continue
+
+        symbol = extract_symbol(tds[0])
+        try:
+            stock = {
+                "symbol": symbol,
+                "price": parse_number(tds[6].text),
+                "open": parse_number(tds[1].text),
+                "high": parse_number(tds[2].text),
+                "low": parse_number(tds[3].text),
+                "volume": parse_number(tds[4].text),
+                "change_pct": tds[7].text.strip()
+            }
+            stocks.append(stock)
+        except Exception as e:
+            print(f"[WARN] Error parsing row {symbol}: {e}")
+    if stocks:
+        print(f"[INFO] Sample first symbol data: {stocks[0]}")
+    return stocks
+
+# -----------------------------
+# Fetch Stock Details (Société Tab)
+# -----------------------------
+def fetch_stock_detail(url):
+    time.sleep(random.uniform(DELAY_MIN, DELAY_MAX))  # polite delay
+    resp = scraper.get(url)
+    resp.raise_for_status()
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    data = {}
+    for label, field in [
+        ("VALORISATION", "market_cap_mtn"),
+        ("Nombre de titres", "shares_outstanding"),
+        ("BNPA", "eps"),
+        ("PER", "pe_ratio"),
+        ("Flottant", "float_pct"),
+        ("Capitaux propres", "total_equity_mtn")
+    ]:
+        td = soup.find("td", string=label)
+        if td:
+            value = td.find_next_sibling("td").text.strip()
+            data[field] = parse_number(value)
+    print(f"[INFO] Sample stock details fetched: {data}")
+    return data
+
+# -----------------------------
+# -----------------------------
+# PROVIDER INTERFACE (Pipeline Compatible)
+# -----------------------------
 def get_provider_name():
     return "Ilboursa"
 
-
-# -------------------------
-# MARKET DATA (ELITE) with CACHE
-# -------------------------
 def fetch_market_data():
-    """
-    Fetch the main market table and return a list of raw stock dicts.
-    """
-    # Try cache first (15 minutes)
-    cached = cache_get("market_data_ilboursa")
-    if cached:
-        return cached
+    return fetch_stock_prices()
 
-    html = fetch(f"{BASE_URL}/marches/aaz", use_proxy=False)
-    if not html or has_captcha(html):
-        return []
-
-    soup = BeautifulSoup(html, "html.parser")
-    tables = soup.find_all("table")
-    if not tables:
-        return []
-
-    # pick the largest table
-    table = max(tables, key=lambda t: len(t.find_all("tr")))
-
-    headers = [th.get_text(strip=True).lower() for th in table.find_all("th")]
-    col_map = detect_columns(headers)
-
-    rows = []
-    for tr in table.find_all("tr")[1:]:
-        tds = tr.find_all("td")
-        if len(tds) < 3:
-            continue
-
-        row = {}
-        confidence = 0
-        for field, idx in col_map.items():
-            if idx is None:
-                continue
-            try:
-                val = tds[idx].get_text(strip=True)
-                # numeric fields
-                if field in ["price", "open_price", "high_price", "low_price", "volume"]:
-                    val = parse_number(val)
-                row[field] = val
-                confidence += 1
-            except:
-                continue
-
-        # include only rows with enough fields
-        if confidence >= 2 and row.get("symbol"):
-            row["source"] = "ilboursa"
-            rows.append(row)
-
-    # cache results
-    cache_set("market_data_ilboursa", rows, ttl=15 * 60)
-    return rows
-
-
-# -------------------------
-# BVPS SCRAPER (DETAIL PAGE) with CACHE
-# -------------------------
 def scrape_bvps(symbol):
-    """
-    Given a stock symbol (e.g., 'SAM', 'TVAL', 'MAG'), fetch
-    its detail page and extract BVPS-related info.
-    """
+    url = f"{BASE_URL}/marches/cotation_{symbol}"
+    return fetch_stock_detail(url)
 
-    # first check cache
-    cache_key = f"bvps_{symbol}"
-    cached = cache_get(cache_key)
-    if cached:
-        return cached
-
-    # build detail URL using the stock symbol (NOT price)
-    clean_symbol = str(symbol).strip().upper()
-    url = f"{BASE_URL}/marches/cotation_{clean_symbol}"
-
-    html = fetch(url, use_proxy=False)
-    if not html or has_captcha(html):
-        return None
-
-    soup = BeautifulSoup(html, "html.parser")
-
-    # find numeric details
-    equity = find_value(soup, ["capitaux propres", "fonds propres"])
-    shares = find_value(soup, ["nombre d'actions", "actions"])
-
-    result = {
-        "total_equity": equity,
-        "shares_outstanding": shares,
-        "book_value_per_share": calculate_bvps(equity, shares)
-    }
-
-    # save to cache for 1 hour
-    cache_set(cache_key, result, ttl=3600)
-
-    # small random delay to reduce load
-    time.sleep(random.uniform(0.1, 0.3))
-
-    return result
-
-
-# -------------------------
-# HELPERS
-# -------------------------
-def detect_columns(headers):
-    """
-    Auto-detect columns by matching keywords to table headers.
-    """
-    mapping = {
-        "symbol": ["valeur", "symbole"],
-        "company_name": ["nom", "désignation"],
-        "price": ["dernier", "cours"],
-        "open_price": ["ouverture"],
-        "high_price": ["haut"],
-        "low_price": ["bas"],
-        "volume": ["volume"]
-    }
-
-    col_map = {}
-    for field, keywords in mapping.items():
-        col_map[field] = find_column(headers, keywords)
-    return col_map
-
-
-def find_column(headers, keywords):
-    """
-    Find the best matched header index for given keywords.
-    """
-    for kw in keywords:
-        match = get_close_matches(kw, headers, n=1, cutoff=0.5)
-        if match:
-            return headers.index(match[0])
-    return None
-
-
-def find_value(soup, keywords):
-    """
-    Extract a numeric value from detail page given a set of labels.
-    """
-    for tr in soup.find_all("tr"):
-        tds = tr.find_all(["td", "th"])
-        if len(tds) < 2:
-            continue
-        label = tds[0].get_text(strip=True).lower()
-        if any(k in label for k in keywords):
-            return extract_number(tds[1].get_text())
-
-    # fallback search in text
-    text = soup.get_text(" ", strip=True).lower()
-    for k in keywords:
-        if k in text:
-            match = re.search(r"[\d\.,]+", text)
-            if match:
-                return extract_number(match.group())
-    return None
-
-
-def parse_number(val):
-    """
-    Safely parse localized numeric strings into floats.
-    """
-    try:
-        return float(val.replace(" ", "").replace(",", "."))
-    except:
-        return None
-
-
-def extract_number(val):
-    """
-    Extract the first numeric pattern in text.
-    """
-    try:
-        return float(val.replace(" ", "").replace(",", "."))
-    except:
-        return None
+# -----------------------------
+# Quick Test if run standalone
+# -----------------------------
+if __name__ == "__main__":
+    print("🚀 Fetching stock list...")
+    stock_list = fetch_stock_list()
+    print(f"✅ Found {len(stock_list)} stocks")
+    print("🚀 Fetching first 5 stock prices...")
+    prices = fetch_stock_prices()
+    for p in prices[:5]:
+        print(p)
+    print("🚀 Fetching first stock details...")
+    details = fetch_stock_detail(stock_list[0]["detail_url"])
+    print(details)
