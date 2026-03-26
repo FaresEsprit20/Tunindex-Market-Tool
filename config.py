@@ -33,3 +33,5 @@ CACHE_TTL = 3600  # seconds
 # PARALLELISM
 # -------------------------
 MAX_WORKERS = 5
+
+DETAIL_SCRAPE_LIMIT = 20
