@@ -2,6 +2,10 @@
 
 from bs4 import BeautifulSoup
 from difflib import get_close_matches
+import re
+import time
+import random
+
 from services.fetcher import fetch
 from utils.captcha_detector import has_captcha
 from utils.fundamentals import calculate_bvps
@@ -18,6 +22,9 @@ def get_provider_name():
 # MARKET DATA (ELITE) with CACHE
 # -------------------------
 def fetch_market_data():
+    """
+    Fetch the main market table and return a list of raw stock dicts.
+    """
     # Try cache first (15 minutes)
     cached = cache_get("market_data_ilboursa")
     if cached:
@@ -32,7 +39,9 @@ def fetch_market_data():
     if not tables:
         return []
 
+    # pick the largest table
     table = max(tables, key=lambda t: len(t.find_all("tr")))
+
     headers = [th.get_text(strip=True).lower() for th in table.find_all("th")]
     col_map = detect_columns(headers)
 
@@ -49,6 +58,7 @@ def fetch_market_data():
                 continue
             try:
                 val = tds[idx].get_text(strip=True)
+                # numeric fields
                 if field in ["price", "open_price", "high_price", "low_price", "volume"]:
                     val = parse_number(val)
                 row[field] = val
@@ -56,28 +66,42 @@ def fetch_market_data():
             except:
                 continue
 
-        if confidence >= 2:
+        # include only rows with enough fields
+        if confidence >= 2 and row.get("symbol"):
             row["source"] = "ilboursa"
             rows.append(row)
 
-    # Cache results for 15 minutes
-    cache_set("market_data_ilboursa", rows, ttl=900)
+    # cache results
+    cache_set("market_data_ilboursa", rows, ttl=15 * 60)
     return rows
 
 
 # -------------------------
-# DETAIL SCRAPER (BVPS) with CACHE
+# BVPS SCRAPER (DETAIL PAGE) with CACHE
 # -------------------------
 def scrape_bvps(symbol):
-    cached = cache_get(f"bvps_{symbol}")
+    """
+    Given a stock symbol (e.g., 'SAM', 'TVAL', 'MAG'), fetch
+    its detail page and extract BVPS-related info.
+    """
+
+    # first check cache
+    cache_key = f"bvps_{symbol}"
+    cached = cache_get(cache_key)
     if cached:
         return cached
 
-    html = fetch(f"{BASE_URL}/marches/cotation_{symbol}", use_proxy=False)
+    # build detail URL using the stock symbol (NOT price)
+    clean_symbol = str(symbol).strip().upper()
+    url = f"{BASE_URL}/marches/cotation_{clean_symbol}"
+
+    html = fetch(url, use_proxy=False)
     if not html or has_captcha(html):
         return None
 
     soup = BeautifulSoup(html, "html.parser")
+
+    # find numeric details
     equity = find_value(soup, ["capitaux propres", "fonds propres"])
     shares = find_value(soup, ["nombre d'actions", "actions"])
 
@@ -87,8 +111,12 @@ def scrape_bvps(symbol):
         "book_value_per_share": calculate_bvps(equity, shares)
     }
 
-    # Cache for 1 hour
-    cache_set(f"bvps_{symbol}", result, ttl=3600)
+    # save to cache for 1 hour
+    cache_set(cache_key, result, ttl=3600)
+
+    # small random delay to reduce load
+    time.sleep(random.uniform(0.1, 0.3))
+
     return result
 
 
@@ -96,6 +124,9 @@ def scrape_bvps(symbol):
 # HELPERS
 # -------------------------
 def detect_columns(headers):
+    """
+    Auto-detect columns by matching keywords to table headers.
+    """
     mapping = {
         "symbol": ["valeur", "symbole"],
         "company_name": ["nom", "désignation"],
@@ -105,6 +136,7 @@ def detect_columns(headers):
         "low_price": ["bas"],
         "volume": ["volume"]
     }
+
     col_map = {}
     for field, keywords in mapping.items():
         col_map[field] = find_column(headers, keywords)
@@ -112,6 +144,9 @@ def detect_columns(headers):
 
 
 def find_column(headers, keywords):
+    """
+    Find the best matched header index for given keywords.
+    """
     for kw in keywords:
         match = get_close_matches(kw, headers, n=1, cutoff=0.5)
         if match:
@@ -120,17 +155,18 @@ def find_column(headers, keywords):
 
 
 def find_value(soup, keywords):
-    import re
-
+    """
+    Extract a numeric value from detail page given a set of labels.
+    """
     for tr in soup.find_all("tr"):
         tds = tr.find_all(["td", "th"])
         if len(tds) < 2:
             continue
-
         label = tds[0].get_text(strip=True).lower()
         if any(k in label for k in keywords):
             return extract_number(tds[1].get_text())
 
+    # fallback search in text
     text = soup.get_text(" ", strip=True).lower()
     for k in keywords:
         if k in text:
@@ -141,6 +177,9 @@ def find_value(soup, keywords):
 
 
 def parse_number(val):
+    """
+    Safely parse localized numeric strings into floats.
+    """
     try:
         return float(val.replace(" ", "").replace(",", "."))
     except:
@@ -148,6 +187,9 @@ def parse_number(val):
 
 
 def extract_number(val):
+    """
+    Extract the first numeric pattern in text.
+    """
     try:
         return float(val.replace(" ", "").replace(",", "."))
     except:

@@ -2,6 +2,7 @@
 
 from config import ACTIVE_PROVIDER
 from data.repository import MarketRepository
+
 from services.normalizer import normalize_stock
 from services.enricher import enrich
 from utils.async_fetch import run_parallel
@@ -32,12 +33,13 @@ def run_pipeline():
     repo = MarketRepository()
 
     # -------------------------
-    # STEP 1: MARKET DATA (cached where possible)
+    # STEP 1: MARKET DATA (cached in provider)
     # -------------------------
     market_data = provider.fetch_market_data()
     if not market_data:
         print("❌ No market data fetched")
         return
+
     print(f"✅ Fetched {len(market_data)} stocks")
 
     # -------------------------
@@ -46,7 +48,7 @@ def run_pipeline():
     if hasattr(provider, "scrape_bvps"):
         symbols = [s["symbol"] for s in market_data if s.get("symbol")]
 
-        # Run scrape_bvps in parallel with more workers for speed
+        # Run scrape_bvps in parallel with higher max_workers
         details = run_parallel(provider.scrape_bvps, symbols, max_workers=20)
 
         # Update market_data with results
