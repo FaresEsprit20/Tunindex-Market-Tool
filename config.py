@@ -32,6 +32,5 @@ CACHE_TTL = 3600  # seconds
 # -------------------------
 # PARALLELISM
 # -------------------------
-MAX_WORKERS = 5
-
-DETAIL_SCRAPE_LIMIT = 20
+MAX_WORKERS = 10         # Max threads for run_parallel (increase for faster BVPS fetch)
+BVPS_SKIP_IF_EXISTS = True  # Skip scraping BVPS if stock already has book_value_per_share
