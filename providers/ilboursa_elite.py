@@ -44,14 +44,28 @@ def parse_number(text):
         return None
 
 def parse_percentage(text):
-    """Parse percentage values including + and - signs"""
+    """Parse percentage values including + and - signs and HTML entities"""
     if not text:
         return None
     cleaned = str(text).strip()
-    cleaned = cleaned.replace("&nbsp;", "").replace(" ", "").replace("%", "")
+    # Handle HTML entities
+    cleaned = cleaned.replace("&nbsp;", "").replace("&thinsp;", "")
+    cleaned = cleaned.replace(" ", "").replace("\xa0", "")
+    # Remove % sign
+    cleaned = cleaned.replace("%", "")
+    # Remove + sign for float conversion (keep -)
+    cleaned = cleaned.replace("+", "")
     try:
         return float(cleaned)
     except:
+        # Try to extract number from text like "+0,86%"
+        match = re.search(r'([+-]?\d+[.,]?\d*)', text)
+        if match:
+            num_str = match.group(1).replace(",", ".")
+            try:
+                return float(num_str)
+            except:
+                return None
         return None
 
 def extract_symbol(td):
@@ -62,22 +76,29 @@ def extract_symbol(td):
         return href.split("cotation_")[-1]
     return td.get_text(strip=True)
 
-def find_text_by_label(soup, label_text):
-    """Find the next sibling or parent text after a label"""
-    # Try to find the label text in various structures
-    # Look for div containing the label
-    for elem in soup.find_all(['div', 'td']):
-        if label_text in elem.get_text():
-            # Get the next element or sibling
-            next_elem = elem.find_next_sibling()
-            if next_elem:
-                return next_elem.get_text(strip=True)
-            # Or get the parent's next sibling
-            parent = elem.parent
-            if parent:
-                next_parent = parent.find_next_sibling()
-                if next_parent:
-                    return next_parent.get_text(strip=True)
+def extract_sector(symbol):
+    """Extract sector information from the secteur page"""
+    url = f"{BASE_URL}/marches/secteur/{symbol}"
+    time.sleep(random.uniform(DELAY_MIN, DELAY_MAX))  # polite delay
+    
+    try:
+        resp = scraper.get(url)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+        
+        # Find the h1 tag that contains the sector information
+        h1_tag = soup.find("h1", class_="h1a")
+        if h1_tag:
+            text = h1_tag.get_text(strip=True)
+            # Extract the sector after "secteur"
+            match = re.search(r'secteur\s+([A-Z\s&]+)', text, re.IGNORECASE)
+            if match:
+                sector = match.group(1).strip()
+                print(f"[DEBUG] {symbol} - Sector: {sector}")
+                return sector
+    except Exception as e:
+        print(f"[WARN] Could not extract sector for {symbol}: {e}")
+    
     return None
 
 # -----------------------------
@@ -144,10 +165,15 @@ def fetch_stock_prices():
     return stocks
 
 # -----------------------------
-# Fetch Stock Details - FIXED SELECTORS
+# Fetch Stock Details - WITH SECTOR AND FLATTENED HISTORICAL DATA
 # -----------------------------
 def fetch_stock_detail(symbol):
-    """Fetch detailed price data for a specific stock"""
+    """Fetch detailed price data for a specific stock including historical ranges and sector"""
+    
+    # First, get the sector information
+    sector = extract_sector(symbol)
+    
+    # Then get the main stock details
     url = f"{BASE_URL}/marches/cotation_{symbol}"
     time.sleep(random.uniform(DELAY_MIN, DELAY_MAX))  # polite delay
     
@@ -157,6 +183,7 @@ def fetch_stock_detail(symbol):
 
     data = {
         "symbol": symbol,
+        "sector": sector,  # Add sector field
         "isin": None,
         "ticker": None,
         "price": None,
@@ -168,7 +195,8 @@ def fetch_stock_detail(symbol):
         "volume": None,
         "volatility_pct": None,
         "capital_exchange_pct": None,
-        "market_cap_mtn": None
+        "market_cap_mtn": None,
+        # Historical fields will be added dynamically
     }
     
     # Extract ISIN and Ticker from the header section
@@ -189,12 +217,19 @@ def fetch_stock_detail(symbol):
         data["price"] = parse_number(price_text)
         print(f"[DEBUG] {symbol} - Price: {price_text} -> {data['price']}")
     
-    # Extract change percentage - from quote_up4 or quote_down4
+    # Extract change percentage - try multiple possible locations
     change_elem = soup.find("div", class_="quote_up4") or soup.find("div", class_="quote_down4")
     if change_elem:
         change_text = change_elem.get_text(strip=True)
         data["change_pct"] = parse_percentage(change_text)
-        print(f"[DEBUG] {symbol} - Change: {change_text} -> {data['change_pct']}")
+        print(f"[DEBUG] {symbol} - Change element found: {change_text} -> {data['change_pct']}")
+    else:
+        # Try to find change in the main quote section
+        quote_upf = soup.find("div", class_="quote_upf")
+        if quote_upf:
+            change_text = quote_upf.get_text(strip=True)
+            data["change_pct"] = parse_percentage(change_text)
+            print(f"[DEBUG] {symbol} - Alternative change: {change_text} -> {data['change_pct']}")
     
     # Extract open, high, low, prev close from the cot_v21 and cot_v22 structures
     # For Open and High (in cot_v21)
@@ -219,12 +254,10 @@ def fetch_stock_detail(symbol):
             if len(divs) >= 4:
                 data["low"] = parse_number(divs[3].get_text(strip=True))
     
-    # Extract volume and volatility from cot_v21 (second part)
+    # Extract volume and volatility from cot_v3
     cot_v3 = soup.find("div", class_="cot_v3")
     if cot_v3:
         # Find all divs within cot_v3
-        v3_divs = cot_v3.find_all("div")
-        # Volume is in the second div of cot_v21 within cot_v3
         v21_in_v3 = cot_v3.find("div", class_="cot_v21")
         if v21_in_v3:
             inner_divs = v21_in_v3.find_all("div")
@@ -256,7 +289,45 @@ def fetch_stock_detail(symbol):
         if vol_elem:
             data["volume"] = parse_number(vol_elem.get_text(strip=True))
     
-    print(f"[DEBUG] {symbol} - Final data: price={data['price']}, open={data['open']}, high={data['high']}, low={data['low']}, volume={data['volume']}")
+    # ============================================================
+    # EXTRACT HISTORICAL DATA AND FLATTEN INTO SEPARATE FIELDS
+    # ============================================================
+    period_mapping = {
+        "1 semaine": "week",
+        "1 mois": "month",
+        "1er janvier": "ytd",  # Year-to-date (from Jan 1)
+        "1 an": "year",
+        "3 ans": "three_years",
+        "5 ans": "five_years",
+        "10 ans": "ten_years"
+    }
+    
+    hist_table = soup.find("table", class_="tableVar")
+    if hist_table:
+        # Skip the header row (thead)
+        rows = hist_table.find_all("tr")[1:]  # Skip header row
+        extracted_count = 0
+        
+        for row in rows:
+            cells = row.find_all("td")
+            if len(cells) >= 4:
+                period = cells[0].get_text(strip=True)
+                high = parse_number(cells[1].get_text(strip=True))
+                low = parse_number(cells[2].get_text(strip=True))
+                change_pct = parse_percentage(cells[3].get_text(strip=True))
+                
+                # Map period name to field prefix
+                field_prefix = period_mapping.get(period)
+                if field_prefix:
+                    data[f"{field_prefix}_high"] = high
+                    data[f"{field_prefix}_low"] = low
+                    data[f"{field_prefix}_change"] = change_pct
+                    extracted_count += 1
+                    print(f"[DEBUG] {symbol} - {period}: High={high}, Low={low}, Change={change_pct}%")
+        
+        print(f"[DEBUG] {symbol} - Extracted {extracted_count} historical periods")
+    
+    print(f"[DEBUG] {symbol} - Final: sector={data['sector']}, price={data['price']}, change={data['change_pct']}")
     return data
 
 # -----------------------------
@@ -281,6 +352,6 @@ if __name__ == "__main__":
     print("Testing with AB (Amen Bank)...")
     result = scrape_bvps("AB")
     print("\nFinal extracted data:")
-    for key, value in result.items():
+    for key, value in sorted(result.items()):
         if value is not None:
             print(f"  {key}: {value}")
