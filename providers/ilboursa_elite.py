@@ -69,7 +69,7 @@ def parse_percentage(text):
         return None
 
 def extract_symbol(td):
-    """Extract symbol from 67 containing <a href="/marches/cotation_SYMBOL">"""
+    """Extract symbol from td containing <a href="/marches/cotation_SYMBOL">"""
     link = td.find("a")
     if link and "href" in link.attrs:
         href = link["href"]
@@ -94,7 +94,6 @@ def extract_sector(symbol):
             match = re.search(r'secteur\s+([A-Z\s&]+)', text, re.IGNORECASE)
             if match:
                 sector = match.group(1).strip()
-                print(f"[DEBUG] {symbol} - Sector: {sector}")
                 return sector
     except Exception as e:
         print(f"[WARN] Could not extract sector for {symbol}: {e}")
@@ -165,7 +164,7 @@ def fetch_stock_prices():
     return stocks
 
 # -----------------------------
-# Fetch Stock Details - WITH SECTOR AND FLATTENED HISTORICAL DATA
+# Fetch Stock Details - COMPLETE WITH ALL FIELDS
 # -----------------------------
 def fetch_stock_detail(symbol):
     """Fetch detailed price data for a specific stock including historical ranges and sector"""
@@ -183,7 +182,7 @@ def fetch_stock_detail(symbol):
 
     data = {
         "symbol": symbol,
-        "sector": sector,  # Add sector field
+        "sector": sector,
         "isin": None,
         "ticker": None,
         "price": None,
@@ -196,7 +195,7 @@ def fetch_stock_detail(symbol):
         "volatility_pct": None,
         "capital_exchange_pct": None,
         "market_cap_mtn": None,
-        # Historical fields will be added dynamically
+        # Historical fields - will be added dynamically
     }
     
     # Extract ISIN and Ticker from the header section
@@ -215,87 +214,60 @@ def fetch_stock_detail(symbol):
     if price_elem:
         price_text = price_elem.get_text(strip=True)
         data["price"] = parse_number(price_text)
-        print(f"[DEBUG] {symbol} - Price: {price_text} -> {data['price']}")
     
-    # Extract change percentage - try multiple possible locations
+    # Extract change percentage
     change_elem = soup.find("div", class_="quote_up4") or soup.find("div", class_="quote_down4")
     if change_elem:
         change_text = change_elem.get_text(strip=True)
         data["change_pct"] = parse_percentage(change_text)
-        print(f"[DEBUG] {symbol} - Change element found: {change_text} -> {data['change_pct']}")
-    else:
-        # Try to find change in the main quote section
-        quote_upf = soup.find("div", class_="quote_upf")
-        if quote_upf:
-            change_text = quote_upf.get_text(strip=True)
-            data["change_pct"] = parse_percentage(change_text)
-            print(f"[DEBUG] {symbol} - Alternative change: {change_text} -> {data['change_pct']}")
     
-    # Extract open, high, low, prev close from the cot_v21 and cot_v22 structures
-    # For Open and High (in cot_v21)
+    # Extract open, high, low, prev close
     cot_v21 = soup.find("div", class_="cot_v21")
     if cot_v21:
         divs = cot_v21.find_all("div")
+        if len(divs) >= 2:
+            data["open"] = parse_number(divs[1].get_text(strip=True))
         if len(divs) >= 4:
-            # Structure: first div is "OUVERTURE", second is value, third is "+ HAUT", fourth is value
-            if len(divs) >= 2:
-                data["open"] = parse_number(divs[1].get_text(strip=True))
-            if len(divs) >= 4:
-                data["high"] = parse_number(divs[3].get_text(strip=True))
+            data["high"] = parse_number(divs[3].get_text(strip=True))
     
-    # For Prev Close and Low (in cot_v22)
     cot_v22 = soup.find("div", class_="cot_v22")
     if cot_v22:
         divs = cot_v22.find_all("div")
+        if len(divs) >= 2:
+            data["prev_close"] = parse_number(divs[1].get_text(strip=True))
         if len(divs) >= 4:
-            # Structure: first div is "CLOTURE VEILLE", second is value, third is "+ BAS", fourth is value
-            if len(divs) >= 2:
-                data["prev_close"] = parse_number(divs[1].get_text(strip=True))
-            if len(divs) >= 4:
-                data["low"] = parse_number(divs[3].get_text(strip=True))
+            data["low"] = parse_number(divs[3].get_text(strip=True))
     
-    # Extract volume and volatility from cot_v3
+    # Extract volume, volatility, capital exchange, market cap
     cot_v3 = soup.find("div", class_="cot_v3")
     if cot_v3:
-        # Find all divs within cot_v3
         v21_in_v3 = cot_v3.find("div", class_="cot_v21")
         if v21_in_v3:
             inner_divs = v21_in_v3.find_all("div")
             if len(inner_divs) >= 2:
-                # Volume value
-                volume_text = inner_divs[1].get_text(strip=True)
-                data["volume"] = parse_number(volume_text)
+                data["volume"] = parse_number(inner_divs[1].get_text(strip=True))
             if len(inner_divs) >= 4:
-                # Volatility value
-                vol_text = inner_divs[3].get_text(strip=True)
-                data["volatility_pct"] = parse_percentage(vol_text)
+                data["volatility_pct"] = parse_percentage(inner_divs[3].get_text(strip=True))
         
-        # Extract capital exchange and market cap from cot_v22 within cot_v3
         v22_in_v3 = cot_v3.find("div", class_="cot_v22")
         if v22_in_v3:
             inner_divs = v22_in_v3.find_all("div")
             if len(inner_divs) >= 2:
-                # Capital exchange
-                cap_ex_text = inner_divs[1].get_text(strip=True)
-                data["capital_exchange_pct"] = parse_percentage(cap_ex_text)
+                data["capital_exchange_pct"] = parse_percentage(inner_divs[1].get_text(strip=True))
             if len(inner_divs) >= 4:
-                # Market cap
-                market_cap_text = inner_divs[3].get_text(strip=True)
-                data["market_cap_mtn"] = parse_number(market_cap_text)
+                data["market_cap_mtn"] = parse_number(inner_divs[3].get_text(strip=True))
     
-    # Alternative: Extract volume from id="vol" if not found
+    # Alternative volume extraction
     if data["volume"] is None:
         vol_elem = soup.find(id="vol")
         if vol_elem:
             data["volume"] = parse_number(vol_elem.get_text(strip=True))
     
-    # ============================================================
-    # EXTRACT HISTORICAL DATA AND FLATTEN INTO SEPARATE FIELDS
-    # ============================================================
+    # Extract historical data and flatten
     period_mapping = {
         "1 semaine": "week",
         "1 mois": "month",
-        "1er janvier": "ytd",  # Year-to-date (from Jan 1)
+        "1er janvier": "ytd",
         "1 an": "year",
         "3 ans": "three_years",
         "5 ans": "five_years",
@@ -304,30 +276,21 @@ def fetch_stock_detail(symbol):
     
     hist_table = soup.find("table", class_="tableVar")
     if hist_table:
-        # Skip the header row (thead)
-        rows = hist_table.find_all("tr")[1:]  # Skip header row
-        extracted_count = 0
-        
+        rows = hist_table.find_all("tr")[1:]  # Skip header
         for row in rows:
             cells = row.find_all("td")
             if len(cells) >= 4:
                 period = cells[0].get_text(strip=True)
                 high = parse_number(cells[1].get_text(strip=True))
                 low = parse_number(cells[2].get_text(strip=True))
-                change_pct = parse_percentage(cells[3].get_text(strip=True))
+                change = parse_percentage(cells[3].get_text(strip=True))
                 
-                # Map period name to field prefix
                 field_prefix = period_mapping.get(period)
                 if field_prefix:
                     data[f"{field_prefix}_high"] = high
                     data[f"{field_prefix}_low"] = low
-                    data[f"{field_prefix}_change"] = change_pct
-                    extracted_count += 1
-                    print(f"[DEBUG] {symbol} - {period}: High={high}, Low={low}, Change={change_pct}%")
-        
-        print(f"[DEBUG] {symbol} - Extracted {extracted_count} historical periods")
+                    data[f"{field_prefix}_change"] = change
     
-    print(f"[DEBUG] {symbol} - Final: sector={data['sector']}, price={data['price']}, change={data['change_pct']}")
     return data
 
 # -----------------------------
