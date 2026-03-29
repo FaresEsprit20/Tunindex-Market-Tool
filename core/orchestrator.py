@@ -11,13 +11,15 @@ from utils.async_fetch import run_parallel
 from providers import ilboursa_elite
 from providers import bvmt
 from providers import tunisie_valeurs
+from providers import investingdotcom
 
 
 def get_provider():
     providers = {
         "ilboursa": ilboursa_elite,
         "bvmt": bvmt,
-        "tunisie_valeurs": tunisie_valeurs
+        "tunisie_valeurs": tunisie_valeurs,
+        "investingdotcom": investingdotcom
     }
     return providers.get(ACTIVE_PROVIDER.lower())
 

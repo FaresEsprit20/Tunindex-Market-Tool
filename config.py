@@ -3,7 +3,7 @@
 # -------------------------
 # ACTIVE PROVIDER
 # -------------------------
-ACTIVE_PROVIDER = "ilboursa"   # ilboursa | bvmt | tunisie_valeurs
+ACTIVE_PROVIDER = "investingdotcom"   # ilboursa | bvmt | tunisie_valeurs | investingdotcom
 
 # -------------------------
 # DATABASE
