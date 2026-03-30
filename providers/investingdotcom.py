@@ -144,12 +144,12 @@ def fetch_stock_detail(symbol, stock_info):
         # Calculate Graham Fair Value and Margin of Safety
         eps = fundamental.get("eps")
         current_price = price.get("last")
+        pe_ratio = fundamental.get("ratio")
 
-        # bv_share is not in __NEXT_DATA__ directly (loaded lazily by JS).
-        # Derive it from price_to_book in peerBenchmarksStore: bvps = price / price_to_book
+        # Derive bvps from peerBenchmarksStore → peerBenchmarksData → value
         bvps = None
-        benchmarks = safe_get(data, "props", "pageProps", "state", "peerBenchmarksStore", "peerBenchmarksData", "value", default=[])
-        for item in benchmarks:
+        pb_items = safe_get(data, "props", "pageProps", "state", "peerBenchmarksStore", "peerBenchmarksData", "value", default=[])
+        for item in pb_items:
             if isinstance(item, dict) and item.get("key") == "price_to_book":
                 try:
                     pb = float(item["company"])
@@ -158,6 +158,32 @@ def fetch_stock_detail(symbol, stock_info):
                 except (ValueError, KeyError, TypeError):
                     pass
                 break
+
+        # Fallback: keyMetricsStore → keyMetrics → metrics (live page path)
+        if bvps is None:
+            km_items = safe_get(data, "props", "pageProps", "state", "keyMetricsStore", "keyMetrics", "metrics", default=[])
+            for item in km_items:
+                if isinstance(item, dict) and item.get("slug") == "bv_share":
+                    try:
+                        raw = str(item.get("value", "")).replace(",", "").strip()
+                        if raw and raw not in ("-", "NA", "N/A", ""):
+                            bvps = float(raw)
+                    except (ValueError, TypeError):
+                        pass
+                    break
+
+        # Fallback: keyMetricsStore → keyMetricsCategoriesData → metrics (static HTML path)
+        if bvps is None:
+            km_items2 = safe_get(data, "props", "pageProps", "state", "keyMetricsStore", "keyMetricsCategoriesData", "metrics", default=[])
+            for item in km_items2:
+                if isinstance(item, dict) and item.get("slug") == "bv_share":
+                    try:
+                        raw = str(item.get("value", "")).replace(",", "").strip()
+                        if raw and raw not in ("-", "NA", "N/A", ""):
+                            bvps = float(raw)
+                    except (ValueError, TypeError):
+                        pass
+                    break
 
         graham_value = graham_fair_value(eps, bvps)
         margin = margin_of_safety(current_price, graham_value)
@@ -219,6 +245,7 @@ def fetch_stock_detail(symbol, stock_info):
 
             "graham_fair_value": graham_value,
             "margin_of_safety": margin,
+            "book_value_per_share": bvps,
         }
 
         print(f"[INFO] Fetched data for {symbol}")
@@ -270,3 +297,19 @@ def fetch_market_data():
     """Fetch all stocks data"""
     return fetch_all_stocks()
 
+# -----------------------------
+# Example Usage
+# -----------------------------
+if __name__ == "__main__":
+    print("Testing with AB (Amen Bank)...")
+    result = fetch_single_stock("AB")
+
+    if result:
+        print("\n" + "=" * 80)
+        print(f"COMPLETE DATA FOR {result['symbol']} - {result['name']}")
+        print("=" * 80)
+
+        for key, value in result.items():
+            print(f"{key:35}: {value}")
+    else:
+        print("Failed to fetch data")
