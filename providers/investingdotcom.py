@@ -3,14 +3,15 @@ import cloudscraper
 import json
 import time
 import random
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from bs4 import BeautifulSoup
 
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from utils.fair_value import graham_fair_value, margin_of_safety
+from config import TUNISIAN_STOCKS
+from utils.fair_value import graham_fair_value, margin_of_safety, close_to_52weekslow_percentage
 
 # -----------------------------
 # Configuration
@@ -20,74 +21,6 @@ DELAY_MIN = 1
 DELAY_MAX = 2
 MAX_WORKERS = 5
 
-# Stock dictionary from our mapping
-TUNISIAN_STOCKS = {
-    "AB": {"symbol": "AB", "name": "AMEN BANK", "url": "/equities/amen-bank"},
-    "AL": {"symbol": "AL", "name": "AIR LIQUIDE Tun", "url": "/equities/air-liquide-tunisie"},
-    "ARTES": {"symbol": "ARTES", "name": "Automobile Reseau Tunisien Et Service", "url": "/equities/artes-renault"},
-    "AST": {"symbol": "AST", "name": "ASTREE SA", "url": "/equities/com.-dassur.et-de-reassur."},
-    "ATB": {"symbol": "ATB", "name": "ATB", "url": "/equities/arab-tunisian-bank"},
-    "ATL": {"symbol": "ATL", "name": "ATL", "url": "/equities/arab-tunisian-lease"},
-    "BH": {"symbol": "BH", "name": "BH Bank", "url": "/equities/banque-de-lhabitat"},
-    "BIAT": {"symbol": "BIAT", "name": "BIAT", "url": "/equities/banque-inter.-arabe-de-tunisie"},
-    "BNA": {"symbol": "BNA", "name": "BNA", "url": "/equities/banque-nationale-agricole"},
-    "BS": {"symbol": "BS", "name": "ATTIJARI BANK", "url": "/equities/banque-attijari-de-tunisie"},
-    "BT": {"symbol": "BT", "name": "BT", "url": "/equities/banque-de-tunisie"},
-    "BTEI": {"symbol": "BTEI", "name": "BTEI", "url": "/equities/bq-de-tunisie-et-des-emirats"},
-    "CC": {"symbol": "CC", "name": "Carthage Cement", "url": "/equities/carthage-cement"},
-    "CIL": {"symbol": "CIL", "name": "CIL", "url": "/equities/compagnie-int.-de-leasing"},
-    "ICF": {"symbol": "ICF", "name": "ICF", "url": "/equities/soc.-des-ind.-chimiu.-du-fluor"},
-    "MGR": {"symbol": "MGR", "name": "Societe Tunisienne des Marches de Gros", "url": "/equities/sotumag"},
-    "BHL": {"symbol": "BHL", "name": "BH Leasing", "url": "/equities/modern-leasing"},
-    "MNP": {"symbol": "MNP", "name": "Societe Nouvelle Maison de la Ville de Tunis", "url": "/equities/monoprix"},
-    "NAKL": {"symbol": "NAKL", "name": "Ennakl Automobiles", "url": "/equities/ennakl-automobiles"},
-    "PLTU": {"symbol": "PLTU", "name": "PLACEMENT DE TUNISIE", "url": "/equities/placements-de-tunisie"},
-    "POULA": {"symbol": "POULA", "name": "POULINA GROUP HLD", "url": "/equities/poulina-group-holding"},
-    "SCB": {"symbol": "SCB", "name": "Les Ciments de Bizerte", "url": "/equities/ciments-de-bizerte"},
-    "SFBT": {"symbol": "SFBT", "name": "SFBT", "url": "/equities/sfbt"},
-    "SIAM": {"symbol": "SIAM", "name": "STE Ind d'appareillage Et De Materiels Elec", "url": "/equities/siame"},
-    "SIMP": {"symbol": "SIMP", "name": "SIMPAR", "url": "/equities/soc.-immob.-et-de-part."},
-    "SITS": {"symbol": "SITS", "name": "SITS", "url": "/equities/soc.-immob.-tuniso-seoud."},
-    "SMG": {"symbol": "SMG", "name": "MAGASIN GENERAL", "url": "/equities/magazin-gneral"},
-    "SOKNA": {"symbol": "SOKNA", "name": "ESSOUKNA", "url": "/equities/societe-essoukna"},
-    "SOMOC": {"symbol": "SOMOC", "name": "SOMOCER", "url": "/equities/societe-moderne-de-ceramique"},
-    "SOTE": {"symbol": "SOTE", "name": "STE Tunisienne d'entreprises De Telecommunications", "url": "/equities/sotetel"},
-    "SPDI": {"symbol": "SPDI", "name": "SPDIT-SICAF", "url": "/equities/spdit"},
-    "STAR": {"symbol": "STAR", "name": "STAR", "url": "/equities/star"},
-    "STB": {"symbol": "STB", "name": "S.T.B", "url": "/equities/societe-tunisienne-de-banque"},
-    "STIP": {"symbol": "STIP", "name": "Societe Tunisienne des Industries de Pneumatiques", "url": "/equities/soc.-tun.-des-ind.-de-pneumatiques"},
-    "STPIL": {"symbol": "STPIL", "name": "SOTRAPIL", "url": "/equities/sotrapil"},
-    "TINV": {"symbol": "TINV", "name": "TUN INVEST - SICAR", "url": "/equities/tuninvest"},
-    "TJL": {"symbol": "TJL", "name": "ATTIJARI LEASING", "url": "/equities/attijari-leasing"},
-    "TLNET": {"symbol": "TLNET", "name": "TELNET", "url": "/equities/telnet-holding"},
-    "TLS": {"symbol": "TLS", "name": "TUNISIE LEASING", "url": "/equities/tunisie-leasing"},
-    "TPR": {"symbol": "TPR", "name": "TPR", "url": "/equities/soc.-tun.-profiles-aluminium"},
-    "TRE": {"symbol": "TRE", "name": "Tunis Re", "url": "/equities/soc.-tun.-de-reassurance"},
-    "UBCI": {"symbol": "UBCI", "name": "Union Bancaire pour le Commerce et l'Industrie", "url": "/equities/u.b.c.i"},
-    "UIB": {"symbol": "UIB", "name": "UIB", "url": "/equities/union-internationale-de-banque"},
-    "WIFAK": {"symbol": "WIFAK", "name": "EL WIFACK LEASING", "url": "/equities/el-wifack-leasing"},
-    "STVR": {"symbol": "STVR", "name": "Societe Tunisienne De Verreries", "url": "/equities/soc-tunisienne-de-verreries"},
-    "BHASS": {"symbol": "BHASS", "name": "BH Assurance", "url": "/equities/salim"},
-    "LNDOR": {"symbol": "LNDOR", "name": "Land Or", "url": "/equities/land-or"},
-    "NBL": {"symbol": "NBL", "name": "New Body Li", "url": "/equities/new-body-li"},
-    "OTH": {"symbol": "OTH", "name": "One Tech Ho", "url": "/equities/one-tech-ho"},
-    "STPAP": {"symbol": "STPAP", "name": "Societe Tunisienne Industrielle Du Papier Et Du Ca", "url": "/equities/sotipapier"},
-    "SOTEM": {"symbol": "SOTEM", "name": "Sotemail", "url": "/equities/sotemail"},
-    "SAH": {"symbol": "SAH", "name": "Sah", "url": "/equities/sah"},
-    "HANL": {"symbol": "HANL", "name": "Hannibal Lease", "url": "/equities/hannibal-lease"},
-    "CITY": {"symbol": "CITY", "name": "City Cars", "url": "/equities/city-cars"},
-    "ECYCL": {"symbol": "ECYCL", "name": "Euro-Cycles", "url": "/equities/euro-cycles"},
-    "MPBS": {"symbol": "MPBS", "name": "Manufacture de Panneaux Bois du Sud", "url": "/equities/mpbs"},
-    "BL": {"symbol": "BL", "name": "Best Lease", "url": "/equities/best-lease"},
-    "DH": {"symbol": "DH", "name": "Societe Delice Holding", "url": "/equities/societe-delice-holding"},
-    "PLAST": {"symbol": "PLAST", "name": "OfficePlast", "url": "/equities/officeplast"},
-    "UMED": {"symbol": "UMED", "name": "Unite de Fabrication de Medicaments", "url": "/equities/unimed-sa"},
-    "SAMAA": {"symbol": "SAMAA", "name": "Atelier Meuble Interieurs", "url": "/equities/atelier-meuble-interieurs"},
-    "ASSMA": {"symbol": "ASSMA", "name": "Ste Assurances Magrebia", "url": "/equities/ste-assurances-magrebia"},
-    "SMART": {"symbol": "SMART", "name": "Smart Tunisie", "url": "/equities/smart-tunisie"},
-    "STAS": {"symbol": "STAS", "name": "Societe Tunisienne D Automobiles", "url": "/equities/societe-tunisienne-d-automobiles"},
-    "AMV": {"symbol": "AMV", "name": "Assurances Maghrebia Vie", "url": "/equities/assurances-maghrebia-vie"},
-}
 
 # -----------------------------
 # Helper Functions
@@ -100,6 +33,44 @@ def safe_get(data, *keys, default=None):
         else:
             return default
     return data
+
+def fetch_debt_equity(symbol, stock_info):
+    """Fetch ONLY Debt/Equity from the financial-summary page"""
+    url = f"{BASE_URL}{stock_info['url']}-financial-summary"
+    
+    time.sleep(random.uniform(DELAY_MIN, DELAY_MAX))
+    
+    try:
+        scraper = cloudscraper.create_scraper(
+            browser={"browser": "chrome", "platform": "windows", "mobile": False}
+        )
+        resp = scraper.get(url)
+        resp.raise_for_status()
+        
+        soup = BeautifulSoup(resp.text, "html.parser")
+        
+        debt_equity = None
+        
+        # Look for Debt / Equity in Key Ratios
+        key_ratios_divs = soup.find_all('div', class_=re.compile(r'border-b.*py-3\.5'))
+        
+        for div in key_ratios_divs:
+            text = div.get_text(strip=True)
+            if 'Debt / Equity' in text:
+                match = re.search(r'Debt / Equity\s*([\d.]+)%', text)
+                if match:
+                    try:
+                        debt_equity = float(match.group(1))
+                    except:
+                        pass
+                break
+        
+        print(f"[INFO] Debt/Equity for {symbol}: {debt_equity}%")
+        return debt_equity
+        
+    except Exception as e:
+        print(f"[ERROR] Failed to fetch Debt/Equity for {symbol}: {e}")
+        return None
 
 def fetch_stock_detail(symbol, stock_info):
     """Fetch data for a single stock from Investing.com"""
@@ -141,50 +112,85 @@ def fetch_stock_detail(symbol, stock_info):
         # Extract analyst/forecast data
         forecast = safe_get(data, "props", "pageProps", "state", "forecastStore", "forecast", default={})
 
-        # Calculate Graham Fair Value and Margin of Safety
-        eps = fundamental.get("eps")
+        # Get current price and 52-week range for calculation
         current_price = price.get("last")
-        pe_ratio = fundamental.get("ratio")
-
-        # Derive bvps from peerBenchmarksStore → peerBenchmarksData → value
+        week_52_low = price.get("fiftyTwoWeekLow")
+        week_52_high = price.get("fiftyTwoWeekHigh")
+        
+        # Calculate distance from 52-week low (inverse of position in range)
+        # Formula: ((current - low) / (high - low)) * 100 = position in range (0-100%)
+        # Then distance from low = 100% - position in range
+        close_to_low_pct = None
+        if current_price and week_52_low and week_52_high and week_52_high > week_52_low:
+            # Position in range (0% = at low, 100% = at high)
+            position_in_range = ((current_price - week_52_low) / (week_52_high - week_52_low)) * 100
+            # Distance from low = how much room from low to current price (inverted)
+            # If at high (100%), distance from low = 0% (meaning not close to low at all)
+            # If at low (0%), distance from low = 100% (meaning very close to low)
+            close_to_low_pct = round(100 - position_in_range, 2)
+            print(f"[INFO] Position in 52-week range for {symbol}: {position_in_range}%")
+            print(f"[INFO] Distance from 52-week low for {symbol}: {close_to_low_pct}%")
+        
+        # Get Key Metrics from keyMetricsStore
+        km_items = safe_get(data, "props", "pageProps", "state", "keyMetricsStore", "keyMetrics", "metrics", default=[])
+        
+        # Extract Book Value per Share from Key Metrics
         bvps = None
-        pb_items = safe_get(data, "props", "pageProps", "state", "peerBenchmarksStore", "peerBenchmarksData", "value", default=[])
-        for item in pb_items:
-            if isinstance(item, dict) and item.get("key") == "price_to_book":
+        for item in km_items:
+            if isinstance(item, dict) and item.get("slug") == "bv_share":
                 try:
-                    pb = float(item["company"])
-                    if pb and pb != 0 and current_price:
-                        bvps = round(float(current_price) / pb, 4)
-                except (ValueError, KeyError, TypeError):
+                    raw = str(item.get("value", "")).replace(",", "").strip()
+                    if raw and raw not in ("-", "NA", "N/A", ""):
+                        bvps = float(raw)
+                        print(f"[INFO] Book Value from Key Metrics: {bvps}")
+                except (ValueError, TypeError):
                     pass
                 break
-
-        # Fallback: keyMetricsStore → keyMetrics → metrics (live page path)
-        if bvps is None:
-            km_items = safe_get(data, "props", "pageProps", "state", "keyMetricsStore", "keyMetrics", "metrics", default=[])
-            for item in km_items:
-                if isinstance(item, dict) and item.get("slug") == "bv_share":
-                    try:
-                        raw = str(item.get("value", "")).replace(",", "").strip()
-                        if raw and raw not in ("-", "NA", "N/A", ""):
-                            bvps = float(raw)
-                    except (ValueError, TypeError):
-                        pass
-                    break
-
-        # Fallback: keyMetricsStore → keyMetricsCategoriesData → metrics (static HTML path)
-        if bvps is None:
-            km_items2 = safe_get(data, "props", "pageProps", "state", "keyMetricsStore", "keyMetricsCategoriesData", "metrics", default=[])
-            for item in km_items2:
-                if isinstance(item, dict) and item.get("slug") == "bv_share":
-                    try:
-                        raw = str(item.get("value", "")).replace(",", "").strip()
-                        if raw and raw not in ("-", "NA", "N/A", ""):
-                            bvps = float(raw)
-                    except (ValueError, TypeError):
-                        pass
-                    break
-
+        
+        # Extract P/E Ratio from Key Metrics
+        pe_ratio = None
+        for item in km_items:
+            if isinstance(item, dict) and item.get("slug") == "pe_ltm":
+                try:
+                    raw = str(item.get("value", "")).replace(",", "").strip()
+                    raw = raw.replace('x', '').strip()
+                    if raw and raw not in ("-", "NA", "N/A", ""):
+                        pe_ratio = float(raw)
+                        print(f"[INFO] P/E Ratio from Key Metrics: {pe_ratio}")
+                except (ValueError, TypeError):
+                    pass
+                break
+        
+        # Extract Price to Book from Key Metrics
+        price_to_book = None
+        for item in km_items:
+            if isinstance(item, dict) and item.get("slug") == "price_to_book":
+                try:
+                    raw = str(item.get("value", "")).replace(",", "").strip()
+                    raw = raw.replace('x', '').strip()
+                    if raw and raw not in ("-", "NA", "N/A", ""):
+                        price_to_book = float(raw)
+                        print(f"[INFO] Price/Book from Key Metrics: {price_to_book}")
+                except (ValueError, TypeError):
+                    pass
+                break
+        
+        # Get EPS from fundamental data
+        eps = fundamental.get("eps")
+        
+        # Get Net Income and Revenue to calculate Profit Margin
+        net_income = fundamental.get("netIncome") or fundamental.get("ni_avail_excl")
+        revenue = fundamental.get("revenue") or fundamental.get("revenueRaw")
+        
+        profit_margin = None
+        if net_income and revenue and revenue != 0:
+            profit_margin = round((net_income / revenue) * 100, 2)
+            print(f"[INFO] Calculated Profit Margin for {symbol}: {profit_margin}%")
+        
+        # Fetch ONLY Debt/Equity from financial summary page
+        debt_to_equity = fetch_debt_equity(symbol, stock_info)
+        
+        # Calculate Graham Fair Value using BVPS from Key Metrics
         graham_value = graham_fair_value(eps, bvps)
         margin = margin_of_safety(current_price, graham_value)
 
@@ -200,22 +206,17 @@ def fetch_stock_detail(symbol, stock_info):
             "sector": company_profile.get("sector", {}).get("name"),
             "industry": company_profile.get("industry", {}).get("name"),
 
-            "last_price": price.get("last"),
+            "last_price": current_price,
             "prev_close": price.get("lastClose"),
             "open": price.get("open"),
             "day_high": price.get("high"),
             "day_low": price.get("low"),
             "change": price.get("change"),
             "change_pct": price.get("changePcr"),
-            "last_update": price.get("lastUpdateTime"),
-
-            "week_52_high": price.get("fiftyTwoWeekHigh"),
-            "week_52_low": price.get("fiftyTwoWeekLow"),
-            "week_52_range": (
-                f"{price.get('fiftyTwoWeekLow')} - {price.get('fiftyTwoWeekHigh')}"
-                if price.get("fiftyTwoWeekLow") and price.get("fiftyTwoWeekHigh")
-                else None
-            ),
+            "week_52_high": week_52_high,
+            "week_52_low": week_52_low,
+            "week_52_range": f"{week_52_low} - {week_52_high}" if week_52_low and week_52_high else None,
+            "close_to_52weekslow_pct": close_to_low_pct,
 
             "volume": volume.get("_turnover"),
             "avg_volume_3m": volume.get("average"),
@@ -225,12 +226,16 @@ def fetch_stock_detail(symbol, stock_info):
 
             "market_cap": fundamental.get("marketCapRaw"),
             "shares_outstanding": fundamental.get("sharesOutstanding"),
-            "eps": fundamental.get("eps"),
-            "pe_ratio": fundamental.get("ratio"),
-            "dividend": fundamental.get("dividend"),
+            "eps": eps,
+            "pe_ratio": pe_ratio,
             "dividend_yield": fundamental.get("yield"),
-            "revenue": fundamental.get("revenueRaw"),
+            "revenue": revenue,
+            "net_income": net_income,
+            "profit_margin": profit_margin,
             "one_year_return": fundamental.get("oneYearReturn"),
+
+            "price_to_book": price_to_book,
+            "debt_to_equity": debt_to_equity,
 
             "beta": performance.get("beta"),
 
@@ -311,5 +316,10 @@ if __name__ == "__main__":
 
         for key, value in result.items():
             print(f"{key:35}: {value}")
+        
+        # Save to JSON file
+        with open(f"{result['symbol']}_data.json", "w", encoding="utf-8") as f:
+            json.dump(result, f, indent=2, ensure_ascii=False)
+        print(f"\n✅ Data saved to {result['symbol']}_data.json")
     else:
         print("Failed to fetch data")
