@@ -34,8 +34,8 @@ def safe_get(data, *keys, default=None):
             return default
     return data
 
-def fetch_debt_equity(symbol, stock_info):
-    """Fetch ONLY Debt/Equity from the financial-summary page"""
+def fetch_financial_ratios(symbol, stock_info):
+    """Fetch P/E Ratio, Price/Book, Debt/Equity from the financial-summary page"""
     url = f"{BASE_URL}{stock_info['url']}-financial-summary"
     
     time.sleep(random.uniform(DELAY_MIN, DELAY_MAX))
@@ -49,27 +49,235 @@ def fetch_debt_equity(symbol, stock_info):
         
         soup = BeautifulSoup(resp.text, "html.parser")
         
-        debt_equity = None
+        # Initialize variables
+        pe_ratio = None
+        price_to_book = None
+        debt_to_equity = None
         
-        # Look for Debt / Equity in Key Ratios
-        key_ratios_divs = soup.find_all('div', class_=re.compile(r'border-b.*py-3\.5'))
+        # Find all cells in the Key Ratios table
+        ratio_cells = soup.find_all('div', class_=re.compile(r'border-b border-\[\#e4eaf1\] py-3\.5'))
         
-        for div in key_ratios_divs:
-            text = div.get_text(strip=True)
-            if 'Debt / Equity' in text:
-                match = re.search(r'Debt / Equity\s*([\d.]+)%', text)
-                if match:
-                    try:
-                        debt_equity = float(match.group(1))
-                    except:
-                        pass
-                break
+        for cell in ratio_cells:
+            # Get the label text
+            label_elem = cell.find('span', class_=re.compile(r'text-xs font-semibold'))
+            if not label_elem:
+                continue
+            
+            label = label_elem.get_text(strip=True)
+            # Get the value - it's in a span with class 'block text-sm'
+            value_elem = cell.find('span', class_=re.compile(r'block text-sm'))
+            if not value_elem:
+                continue
+            
+            value = value_elem.get_text(strip=True)
+            
+            # Extract P/E Ratio
+            if 'P/E Ratio' in label:
+                try:
+                    pe_ratio = float(value)
+                    print(f"[INFO] P/E Ratio from Financial Summary for {symbol}: {pe_ratio}")
+                except (ValueError, TypeError):
+                    pass
+            
+            # Extract Price/Book
+            elif 'Price/Book' in label:
+                try:
+                    price_to_book = float(value)
+                    print(f"[INFO] Price/Book from Financial Summary for {symbol}: {price_to_book}")
+                except (ValueError, TypeError):
+                    pass
+            
+            # Extract Debt / Equity
+            elif 'Debt / Equity' in label:
+                try:
+                    # Remove % sign if present
+                    clean_value = value.replace('%', '').strip()
+                    debt_to_equity = float(clean_value)
+                    print(f"[INFO] Debt/Equity from Financial Summary for {symbol}: {debt_to_equity}%")
+                except (ValueError, TypeError):
+                    pass
         
-        print(f"[INFO] Debt/Equity for {symbol}: {debt_equity}%")
-        return debt_equity
+        return {
+            'pe_ratio': pe_ratio,
+            'price_to_book': price_to_book,
+            'debt_to_equity': debt_to_equity
+        }
         
     except Exception as e:
-        print(f"[ERROR] Failed to fetch Debt/Equity for {symbol}: {e}")
+        print(f"[ERROR] Failed to fetch financial ratios for {symbol}: {e}")
+        return {
+            'pe_ratio': None,
+            'price_to_book': None,
+            'debt_to_equity': None
+        }
+
+def calculate_book_value_per_share(data):
+    """Extract Total Equity and Shares Outstanding from financial statements and calculate Book Value Per Share"""
+    try:
+        total_equity = None
+        shares_outstanding = None
+        
+        # Try to get from financialStatementsStore annual reports
+        annual_reports = safe_get(data, "props", "pageProps", "state", "financialStatementsStore", "annualReports", default=[])
+        
+        if annual_reports and len(annual_reports) > 0:
+            # Get the most recent annual report
+            latest_report = annual_reports[-1]
+            
+            # Extract Total Equity
+            total_equity = latest_report.get("indicators", {}).get("total_equity_standard")
+            print(f"[DEBUG] Total Equity from financialStatementsStore: {total_equity}")
+        
+        # If not found in annual reports, try balance sheet
+        if total_equity is None:
+            balance_sheet = safe_get(data, "props", "pageProps", "state", "balanceSheetStore", "balanceSheetDataAnnual", default={})
+            if balance_sheet and balance_sheet.get("reports"):
+                reports = balance_sheet.get("reports", [])
+                if reports:
+                    latest_report = reports[-1]
+                    total_equity = latest_report.get("indicators", {}).get("total_equity_standard")
+                    print(f"[DEBUG] Total Equity from Balance Sheet: {total_equity}")
+        
+        # Get shares outstanding from fundamental data
+        shares_outstanding = safe_get(data, "props", "pageProps", "state", "equityStore", "instrument", "fundamental", "sharesOutstanding", default=None)
+        print(f"[DEBUG] Shares Outstanding from fundamental: {shares_outstanding}")
+        
+        # If shares not found, try key metrics
+        if shares_outstanding is None:
+            key_metrics = safe_get(data, "props", "pageProps", "state", "keyMetricsStore", "keyMetrics", "metrics", default=[])
+            for metric in key_metrics:
+                if isinstance(metric, dict) and metric.get("slug") == "shares_out":
+                    value = metric.get("value", "")
+                    try:
+                        if value:
+                            clean_value = str(value).replace(',', '').strip()
+                            if 'M' in clean_value:
+                                shares_outstanding = float(clean_value.replace('M', '')) * 1000000
+                            elif 'B' in clean_value:
+                                shares_outstanding = float(clean_value.replace('B', '')) * 1000000000
+                            else:
+                                shares_outstanding = float(clean_value)
+                            print(f"[DEBUG] Shares Outstanding from Key Metrics: {shares_outstanding}")
+                    except (ValueError, TypeError):
+                        pass
+                    break
+        
+        # Calculate BVPS if we have both values
+        if total_equity and shares_outstanding and shares_outstanding > 0:
+            bvps = total_equity / shares_outstanding
+            print(f"[INFO] Calculated Book Value Per Share: {bvps} (Total Equity: {total_equity}, Shares: {shares_outstanding})")
+            return round(bvps, 2)
+        
+        return None
+        
+    except Exception as e:
+        print(f"[ERROR] Failed to calculate Book Value Per Share: {e}")
+        return None
+
+def calculate_profit_margin_from_financials(data):
+    """Extract Net Income and Total Revenue from financial statements and calculate profit margin"""
+    try:
+        # Try to get annual reports from financialStatementsStore
+        annual_reports = safe_get(data, "props", "pageProps", "state", "financialStatementsStore", "annualReports", default=[])
+        
+        if annual_reports and len(annual_reports) > 0:
+            # Get the most recent annual report (last in the list)
+            latest_report = annual_reports[-1]
+            
+            # Extract Net Income and Total Revenue
+            net_income = latest_report.get("indicators", {}).get("net_income")
+            total_revenue = latest_report.get("indicators", {}).get("total_revenues_standard")
+            
+            print(f"[DEBUG] Net Income from financialStatementsStore: {net_income}")
+            print(f"[DEBUG] Total Revenue from financialStatementsStore: {total_revenue}")
+            
+            if net_income and total_revenue and total_revenue > 0:
+                profit_margin = (net_income / total_revenue) * 100
+                return round(profit_margin, 2)
+        
+        # Try to get from incomeStatementStore
+        income_statement = safe_get(data, "props", "pageProps", "state", "incomeStatementStore", "incomeStatementDataAnnual", default={})
+        
+        if income_statement and income_statement.get("reports"):
+            reports = income_statement.get("reports", [])
+            if reports:
+                # Get the most recent report
+                latest_report = reports[-1]
+                indicators = latest_report.get("indicators", {})
+                
+                net_income = indicators.get("net_income")
+                total_revenue = indicators.get("total_revenues_standard")
+                
+                print(f"[DEBUG] Net Income from Income Statement: {net_income}")
+                print(f"[DEBUG] Total Revenue from Income Statement: {total_revenue}")
+                
+                if net_income and total_revenue and total_revenue > 0:
+                    profit_margin = (net_income / total_revenue) * 100
+                    return round(profit_margin, 2)
+        
+        # Try to get from key metrics (as fallback)
+        key_metrics = safe_get(data, "props", "pageProps", "state", "keyMetricsStore", "keyMetrics", "metrics", default=[])
+        
+        if key_metrics:
+            net_income = None
+            total_revenue = None
+            
+            for metric in key_metrics:
+                if isinstance(metric, dict):
+                    slug = metric.get("slug", "")
+                    value = metric.get("value", "")
+                    
+                    if slug == "ni_avail_excl" and value:
+                        try:
+                            # Clean value (remove commas, K/M/B suffixes)
+                            clean_value = str(value).replace(',', '').strip()
+                            if 'B' in clean_value:
+                                net_income = float(clean_value.replace('B', '')) * 1000000000
+                            elif 'M' in clean_value:
+                                net_income = float(clean_value.replace('M', '')) * 1000000
+                            else:
+                                net_income = float(clean_value)
+                            print(f"[DEBUG] Net Income from Key Metrics: {net_income}")
+                        except (ValueError, TypeError):
+                            pass
+                    
+                    elif slug == "total_rev" and value:
+                        try:
+                            clean_value = str(value).replace(',', '').strip()
+                            if 'B' in clean_value:
+                                total_revenue = float(clean_value.replace('B', '')) * 1000000000
+                            elif 'M' in clean_value:
+                                total_revenue = float(clean_value.replace('M', '')) * 1000000
+                            else:
+                                total_revenue = float(clean_value)
+                            print(f"[DEBUG] Total Revenue from Key Metrics: {total_revenue}")
+                        except (ValueError, TypeError):
+                            pass
+            
+            if net_income and total_revenue and total_revenue > 0:
+                profit_margin = (net_income / total_revenue) * 100
+                return round(profit_margin, 2)
+        
+        # Try to get from fundamental data (as last resort)
+        fundamental = safe_get(data, "props", "pageProps", "state", "equityStore", "instrument", "fundamental", default={})
+        
+        if fundamental:
+            revenue_raw = fundamental.get("revenueRaw")
+            eps = fundamental.get("eps")
+            shares_outstanding = fundamental.get("sharesOutstanding")
+            
+            # If we have EPS and shares outstanding, we can estimate net income
+            if eps and shares_outstanding:
+                net_income_est = eps * shares_outstanding
+                if revenue_raw:
+                    profit_margin = (net_income_est / revenue_raw) * 100
+                    print(f"[DEBUG] Profit Margin from EPS * Shares (estimated): {profit_margin}%")
+                    return round(profit_margin, 2)
+        
+        return None
+        
+    except Exception as e:
+        print(f"[ERROR] Failed to calculate profit margin from financials: {e}")
         return None
 
 def fetch_stock_detail(symbol, stock_info):
@@ -194,11 +402,25 @@ def fetch_stock_detail(symbol, stock_info):
                         except:
                             pass
         
+        # If BVPS is still None, calculate it manually from financial data
+        if bvps is None:
+            bvps = calculate_book_value_per_share(data)
+            if bvps:
+                print(f"[INFO] Book Value manually calculated: {bvps}")
+        
         # Get EPS from fundamental data
         eps = fundamental.get("eps")
         
-        # Fetch ONLY Debt/Equity from financial summary page
-        debt_to_equity = fetch_debt_equity(symbol, stock_info)
+        # Fetch financial ratios (P/E, P/B, Debt/Equity) from financial summary page
+        financial_ratios = fetch_financial_ratios(symbol, stock_info)
+        
+        # Use the fetched values, falling back to previously extracted values if needed
+        final_pe_ratio = financial_ratios.get('pe_ratio') if financial_ratios.get('pe_ratio') is not None else pe_ratio
+        final_price_to_book = financial_ratios.get('price_to_book') if financial_ratios.get('price_to_book') is not None else price_to_book
+        final_debt_to_equity = financial_ratios.get('debt_to_equity')
+        
+        # Calculate profit margin from financial data
+        profit_margin = calculate_profit_margin_from_financials(data)
         
         # Calculate Graham Fair Value using BVPS
         graham_value = graham_fair_value(eps, bvps)
@@ -239,13 +461,14 @@ def fetch_stock_detail(symbol, stock_info):
             "market_cap": fundamental.get("marketCapRaw"),
             "shares_outstanding": fundamental.get("sharesOutstanding"),
             "eps": eps,
-            "pe_ratio": pe_ratio,
+            "pe_ratio": final_pe_ratio,
             "dividend_yield": fundamental.get("yield"),
             "revenue": fundamental.get("revenueRaw"),
             "one_year_return": fundamental.get("oneYearReturn"),
 
-            "price_to_book": price_to_book,
-            "debt_to_equity": debt_to_equity,
+            "price_to_book": final_price_to_book,
+            "debt_to_equity": final_debt_to_equity,
+            "profit_margin": profit_margin,  # Calculated from financial statements
 
             "beta": performance.get("beta"),
 
@@ -316,8 +539,8 @@ def fetch_market_data():
 # Example Usage
 # -----------------------------
 if __name__ == "__main__":
-    print("Testing with AB (Amen Bank)...")
-    result = fetch_single_stock("AB")
+    print("Testing with BS Attijari Bank...")
+    result = fetch_single_stock("BS")
 
     if result:
         print("\n" + "=" * 80)
