@@ -117,80 +117,90 @@ def fetch_stock_detail(symbol, stock_info):
         week_52_low = price.get("fiftyTwoWeekLow")
         week_52_high = price.get("fiftyTwoWeekHigh")
         
-        # Calculate distance from 52-week low (inverse of position in range)
-        # Formula: ((current - low) / (high - low)) * 100 = position in range (0-100%)
-        # Then distance from low = 100% - position in range
+        # Calculate distance from 52-week low
         close_to_low_pct = None
         if current_price and week_52_low and week_52_high and week_52_high > week_52_low:
-            # Position in range (0% = at low, 100% = at high)
             position_in_range = ((current_price - week_52_low) / (week_52_high - week_52_low)) * 100
-            # Distance from low = how much room from low to current price (inverted)
-            # If at high (100%), distance from low = 0% (meaning not close to low at all)
-            # If at low (0%), distance from low = 100% (meaning very close to low)
             close_to_low_pct = round(100 - position_in_range, 2)
-            print(f"[INFO] Position in 52-week range for {symbol}: {position_in_range}%")
             print(f"[INFO] Distance from 52-week low for {symbol}: {close_to_low_pct}%")
         
-        # Get Key Metrics from keyMetricsStore
-        km_items = safe_get(data, "props", "pageProps", "state", "keyMetricsStore", "keyMetrics", "metrics", default=[])
-        
-        # Extract Book Value per Share from Key Metrics
+        # Extract Key Metrics from the keyMetricsStore in JSON
         bvps = None
-        for item in km_items:
-            if isinstance(item, dict) and item.get("slug") == "bv_share":
-                try:
-                    raw = str(item.get("value", "")).replace(",", "").strip()
-                    if raw and raw not in ("-", "NA", "N/A", ""):
-                        bvps = float(raw)
-                        print(f"[INFO] Book Value from Key Metrics: {bvps}")
-                except (ValueError, TypeError):
-                    pass
-                break
-        
-        # Extract P/E Ratio from Key Metrics
         pe_ratio = None
-        for item in km_items:
-            if isinstance(item, dict) and item.get("slug") == "pe_ltm":
-                try:
-                    raw = str(item.get("value", "")).replace(",", "").strip()
-                    raw = raw.replace('x', '').strip()
-                    if raw and raw not in ("-", "NA", "N/A", ""):
-                        pe_ratio = float(raw)
-                        print(f"[INFO] P/E Ratio from Key Metrics: {pe_ratio}")
-                except (ValueError, TypeError):
-                    pass
-                break
-        
-        # Extract Price to Book from Key Metrics
         price_to_book = None
-        for item in km_items:
-            if isinstance(item, dict) and item.get("slug") == "price_to_book":
-                try:
-                    raw = str(item.get("value", "")).replace(",", "").strip()
-                    raw = raw.replace('x', '').strip()
-                    if raw and raw not in ("-", "NA", "N/A", ""):
-                        price_to_book = float(raw)
-                        print(f"[INFO] Price/Book from Key Metrics: {price_to_book}")
-                except (ValueError, TypeError):
-                    pass
-                break
+        
+        # Get the keyMetrics array from the correct path
+        key_metrics_list = safe_get(data, "props", "pageProps", "state", "keyMetricsStore", "keyMetrics", "metrics", default=[])
+        
+        # If that didn't work, try alternative path
+        if not key_metrics_list:
+            key_metrics_list = safe_get(data, "props", "pageProps", "state", "keyMetricsStore", "keyMetrics", default=[])
+        
+        # If it's a dict, try to extract the metrics array
+        if isinstance(key_metrics_list, dict):
+            # Look for metrics array in the dict
+            key_metrics_list = key_metrics_list.get("metrics", [])
+        
+        print(f"[DEBUG] Found {len(key_metrics_list) if key_metrics_list else 0} metrics")
+        
+        # Iterate through the metrics
+        if key_metrics_list:
+            for item in key_metrics_list:
+                if isinstance(item, dict):
+                    slug = item.get("slug", "")
+                    value = item.get("value", "")
+                    
+                    if slug == "bv_share":
+                        try:
+                            # Clean the value (remove commas, etc.)
+                            clean_value = str(value).replace(',', '').strip()
+                            if clean_value and clean_value not in ("-", "NA", "N/A", ""):
+                                bvps = float(clean_value)
+                                print(f"[INFO] Book Value from Key Metrics: {bvps}")
+                        except (ValueError, TypeError):
+                            pass
+                    
+                    elif slug == "pe_ltm":
+                        try:
+                            clean_value = str(value).replace(',', '').replace('x', '').strip()
+                            if clean_value and clean_value not in ("-", "NA", "N/A", ""):
+                                pe_ratio = float(clean_value)
+                                print(f"[INFO] P/E Ratio from Key Metrics: {pe_ratio}")
+                        except (ValueError, TypeError):
+                            pass
+                    
+                    elif slug == "price_to_book":
+                        try:
+                            clean_value = str(value).replace(',', '').replace('x', '').strip()
+                            if clean_value and clean_value not in ("-", "NA", "N/A", ""):
+                                price_to_book = float(clean_value)
+                                print(f"[INFO] Price/Book from Key Metrics: {price_to_book}")
+                        except (ValueError, TypeError):
+                            pass
+        
+        # Fallback: Try to find in the HTML key metrics section
+        if bvps is None:
+            # Look for the specific div containing Book Value
+            bv_elements = soup.find_all('div', class_=re.compile(r'flex flex-wrap items-center justify-between'))
+            for elem in bv_elements:
+                text = elem.get_text()
+                if 'Book Value / Share' in text:
+                    # Find the number in the dd element
+                    dd = elem.find('dd')
+                    if dd:
+                        try:
+                            bvps = float(dd.get_text(strip=True))
+                            print(f"[INFO] Book Value from HTML div: {bvps}")
+                        except:
+                            pass
         
         # Get EPS from fundamental data
         eps = fundamental.get("eps")
         
-        # Get Net Income and Revenue to calculate Profit Margin
-        net_income = fundamental.get("netIncome") or fundamental.get("ni_avail_excl")
-        revenue = fundamental.get("revenue") or fundamental.get("revenueRaw")
-        
-        profit_margin = None
-        if net_income and revenue and revenue != 0:
-            profit_margin = round((net_income / revenue) * 100, 2)
-            print(f"[INFO] Calculated Profit Margin for {symbol}: {profit_margin}%")
-        
         # Fetch ONLY Debt/Equity from financial summary page
         debt_to_equity = fetch_debt_equity(symbol, stock_info)
         
-        # Calculate Graham Fair Value using BVPS from Key Metrics
+        # Calculate Graham Fair Value using BVPS
         graham_value = graham_fair_value(eps, bvps)
         margin = margin_of_safety(current_price, graham_value)
 
@@ -213,6 +223,8 @@ def fetch_stock_detail(symbol, stock_info):
             "day_low": price.get("low"),
             "change": price.get("change"),
             "change_pct": price.get("changePcr"),
+            "last_update": price.get("lastUpdateTime"),
+
             "week_52_high": week_52_high,
             "week_52_low": week_52_low,
             "week_52_range": f"{week_52_low} - {week_52_high}" if week_52_low and week_52_high else None,
@@ -229,9 +241,7 @@ def fetch_stock_detail(symbol, stock_info):
             "eps": eps,
             "pe_ratio": pe_ratio,
             "dividend_yield": fundamental.get("yield"),
-            "revenue": revenue,
-            "net_income": net_income,
-            "profit_margin": profit_margin,
+            "revenue": fundamental.get("revenueRaw"),
             "one_year_return": fundamental.get("oneYearReturn"),
 
             "price_to_book": price_to_book,
@@ -316,10 +326,5 @@ if __name__ == "__main__":
 
         for key, value in result.items():
             print(f"{key:35}: {value}")
-        
-        # Save to JSON file
-        with open(f"{result['symbol']}_data.json", "w", encoding="utf-8") as f:
-            json.dump(result, f, indent=2, ensure_ascii=False)
-        print(f"\n✅ Data saved to {result['symbol']}_data.json")
     else:
         print("Failed to fetch data")
