@@ -117,27 +117,6 @@ def calculate_book_value_per_share(data):
         total_equity = None
         shares_outstanding = None
         
-        # Try to get from financialStatementsStore annual reports
-        annual_reports = safe_get(data, "props", "pageProps", "state", "financialStatementsStore", "annualReports", default=[])
-        
-        if annual_reports and len(annual_reports) > 0:
-            # Get the most recent annual report
-            latest_report = annual_reports[-1]
-            
-            # Extract Total Equity
-            total_equity = latest_report.get("indicators", {}).get("total_equity_standard")
-            print(f"[DEBUG] Total Equity from financialStatementsStore: {total_equity}")
-        
-        # If not found in annual reports, try balance sheet
-        if total_equity is None:
-            balance_sheet = safe_get(data, "props", "pageProps", "state", "balanceSheetStore", "balanceSheetDataAnnual", default={})
-            if balance_sheet and balance_sheet.get("reports"):
-                reports = balance_sheet.get("reports", [])
-                if reports:
-                    latest_report = reports[-1]
-                    total_equity = latest_report.get("indicators", {}).get("total_equity_standard")
-                    print(f"[DEBUG] Total Equity from Balance Sheet: {total_equity}")
-        
         # Get shares outstanding from fundamental data
         shares_outstanding = safe_get(data, "props", "pageProps", "state", "equityStore", "instrument", "fundamental", "sharesOutstanding", default=None)
         print(f"[DEBUG] Shares Outstanding from fundamental: {shares_outstanding}")
@@ -162,11 +141,85 @@ def calculate_book_value_per_share(data):
                         pass
                     break
         
+        # Try to get Total Equity from balanceSheetStore (most reliable)
+        balance_sheet_annual = safe_get(data, "props", "pageProps", "state", "balanceSheetStore", "balanceSheetDataAnnual", default={})
+        
+        if balance_sheet_annual and balance_sheet_annual.get("reports"):
+            reports = balance_sheet_annual.get("reports", [])
+            if reports:
+                # Get the most recent report
+                latest_report = reports[-1]
+                indicators = latest_report.get("indicators", {})
+                
+                # Look for Total Equity - could be under different keys
+                total_equity = indicators.get("total_equity_standard")
+                if total_equity is None:
+                    total_equity = indicators.get("total_equity")
+                if total_equity is None:
+                    # Try to find total equity by looking for equity-related fields
+                    for key, value in indicators.items():
+                        if 'equity' in key.lower() and 'total' in key.lower():
+                            total_equity = value
+                            break
+                
+                print(f"[DEBUG] Total Equity from Balance Sheet: {total_equity}")
+        
+        # If not found in balance sheet, try financialStatementsStore
+        if total_equity is None:
+            annual_reports = safe_get(data, "props", "pageProps", "state", "financialStatementsStore", "annualReports", default=[])
+            
+            if annual_reports and len(annual_reports) > 0:
+                latest_report = annual_reports[-1]
+                total_equity = latest_report.get("indicators", {}).get("total_equity_standard")
+                if total_equity is None:
+                    total_equity = latest_report.get("indicators", {}).get("total_equity")
+                print(f"[DEBUG] Total Equity from financialStatementsStore: {total_equity}")
+        
+        # If still not found, try to calculate from Price/Book ratio if available
+        if total_equity is None and shares_outstanding:
+            # Get current price and price_to_book from fundamental or key metrics
+            current_price = safe_get(data, "props", "pageProps", "state", "equityStore", "instrument", "price", "last", default=None)
+            price_to_book = None
+            
+            # Try to get price_to_book from key metrics
+            key_metrics = safe_get(data, "props", "pageProps", "state", "keyMetricsStore", "keyMetrics", "metrics", default=[])
+            for metric in key_metrics:
+                if isinstance(metric, dict) and metric.get("slug") == "price_to_book":
+                    value = metric.get("value", "")
+                    try:
+                        if value and value not in ("-", "NA", "N/A", ""):
+                            clean_value = str(value).replace(',', '').replace('x', '').strip()
+                            price_to_book = float(clean_value)
+                            print(f"[DEBUG] Price/Book from Key Metrics: {price_to_book}")
+                    except (ValueError, TypeError):
+                        pass
+                    break
+            
+            # If we have price_to_book and current price, we can calculate BVPS
+            if price_to_book and current_price and price_to_book > 0:
+                bvps = current_price / price_to_book
+                print(f"[INFO] Book Value calculated from Price/Book ratio: {bvps} (Price: {current_price}, P/B: {price_to_book})")
+                return round(bvps, 2)
+        
         # Calculate BVPS if we have both values
         if total_equity and shares_outstanding and shares_outstanding > 0:
             bvps = total_equity / shares_outstanding
             print(f"[INFO] Calculated Book Value Per Share: {bvps} (Total Equity: {total_equity}, Shares: {shares_outstanding})")
             return round(bvps, 2)
+        
+        # If we have shares but no total equity, try to get book value from key metrics
+        if shares_outstanding and total_equity is None:
+            key_metrics = safe_get(data, "props", "pageProps", "state", "keyMetricsStore", "keyMetrics", "metrics", default=[])
+            for metric in key_metrics:
+                if isinstance(metric, dict) and metric.get("slug") == "bv_share":
+                    value = metric.get("value", "")
+                    try:
+                        if value and value not in ("-", "NA", "N/A", ""):
+                            bvps = float(str(value).replace(',', '').strip())
+                            print(f"[INFO] Book Value from Key Metrics: {bvps}")
+                            return bvps
+                    except (ValueError, TypeError):
+                        pass
         
         return None
         
@@ -407,6 +460,8 @@ def fetch_stock_detail(symbol, stock_info):
             bvps = calculate_book_value_per_share(data)
             if bvps:
                 print(f"[INFO] Book Value manually calculated: {bvps}")
+            else:
+                print(f"[WARN] Could not calculate Book Value for {symbol}")
         
         # Get EPS from fundamental data
         eps = fundamental.get("eps")
@@ -422,9 +477,15 @@ def fetch_stock_detail(symbol, stock_info):
         # Calculate profit margin from financial data
         profit_margin = calculate_profit_margin_from_financials(data)
         
-        # Calculate Graham Fair Value using BVPS
-        graham_value = graham_fair_value(eps, bvps)
-        margin = margin_of_safety(current_price, graham_value)
+        # Calculate Graham Fair Value using BVPS (only if bvps is available)
+        graham_value = None
+        margin = None
+        if bvps is not None and eps is not None:
+            graham_value = graham_fair_value(eps, bvps)
+            if current_price and graham_value:
+                margin = margin_of_safety(current_price, graham_value)
+        else:
+            print(f"[WARN] Cannot calculate Graham Fair Value - BVPS: {bvps}, EPS: {eps}")
 
         stock_data = {
             "symbol": symbol,
